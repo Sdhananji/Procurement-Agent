@@ -4,6 +4,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from app.config import GEMINI_MODEL
 from app.db import queries
 from app.graph.state import ProcurementState
+import json
+from app.scoring import rank_quotations
 
 llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0)
 
@@ -94,3 +96,66 @@ def stock_check_node(state: ProcurementState) -> dict:
 
     return {"stock_available": available, "quantity_to_order": to_order,
             "message": message}
+
+
+def _as_text(content) -> str:
+    """Gemini sometimes returns a list of content blocks instead of a plain string."""
+    if isinstance(content, str):
+        return content
+    return "".join(
+        part.get("text", "") if isinstance(part, dict) else str(part)
+        for part in content
+    )
+
+
+def compare_node(state: ProcurementState) -> dict:
+    quotations = queries.get_quotations(state["product_id"])
+    ranked, rejected = rank_quotations(quotations, state["quantity_to_order"])
+
+    if not ranked:
+        reasons = "; ".join(f"{r['supplier_name']}: {r['reason']}" for r in rejected)
+        queries.log_event(
+            "purchase_request", state["request_id"], "no_eligible_supplier",
+            "compare_node", {"rejected": rejected},
+        )
+        return {
+            "quotations": quotations,
+            "ranked_quotes": [],
+            "needs_human_review": True,
+            "message": "No supplier can fulfil this order automatically, "
+                       f"so it needs a human buyer. ({reasons})",
+        }
+
+    best = ranked[0]
+    queries.log_event(
+        "purchase_request", state["request_id"], "suppliers_ranked", "compare_node",
+        {"weights_used": "see config", "ranked": ranked, "rejected": rejected},
+    )
+    return {
+        "quotations": quotations,
+        "ranked_quotes": ranked,
+        "recommended_supplier": best,
+        "needs_human_review": False,
+    }
+
+
+def explain_node(state: ProcurementState) -> dict:
+    ranked = state["ranked_quotes"]
+    best = state["recommended_supplier"]
+
+    prompt = f"""You are explaining a procurement recommendation to a manager.
+
+Product: {state['product_name']}
+Quantity to order: {state['quantity_to_order']} pairs for {state['branch']}
+Recommended supplier: {best['supplier_name']}
+
+Ranked options with their scores (already calculated, do not recalculate):
+{json.dumps(ranked, indent=2, default=str)}
+
+Write at most 4 sentences in plain business English:
+- Say which supplier is recommended and why, using the given numbers only.
+- Mention one trade-off versus the runner-up if there is one.
+Do not invent any figure that is not in the data above."""
+
+    text = _as_text(llm.invoke(prompt).content)
+    return {"recommendation_text": text, "message": text}

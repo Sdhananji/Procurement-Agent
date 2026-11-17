@@ -18,9 +18,16 @@ class ProcurementState(TypedDict, total=False):
     stock_available: int
     quantity_to_order: int
 
-    # Filled by later nodes (we will use these soon)
+    # Filled by the compare node
     quotations: list
+    ranked_quotes: list
     recommended_supplier: dict
+    needs_human_review: bool
+
+    # Filled by the explain node
+    recommendation_text: str
+
+    # Later nodes
     purchase_order: dict
     approval_status: str
 

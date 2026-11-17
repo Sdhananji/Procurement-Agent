@@ -51,3 +51,23 @@ def log_event(entity: str, entity_id: int | None, action: str,
             "VALUES (%s, %s, %s, %s, %s)",
             (entity, entity_id, action, actor, Jsonb(details)),
         )
+
+
+def get_quotations(product_id: int) -> list[dict]:
+    with _conn() as conn:
+        return conn.execute(
+            """
+            SELECT q.id AS quotation_id,
+                   q.supplier_id,
+                   s.name AS supplier_name,
+                   s.reliability_score::float AS reliability_score,
+                   q.unit_price::float AS unit_price,
+                   q.delivery_days,
+                   q.min_order_qty,
+                   q.valid_until::text AS valid_until
+            FROM quotations q
+            JOIN suppliers s ON s.id = q.supplier_id
+            WHERE q.product_id = %s
+            """,
+            (product_id,),
+        ).fetchall()
